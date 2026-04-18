@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 
-const BLOCK_TIME_S = 10;
+const BLOCK_TIME_S = 6;
 const WINDOW_MINUTES = 3;
 const WINDOW_LEVELS = Math.round((WINDOW_MINUTES * 60) / BLOCK_TIME_S); // 18
 
@@ -27,7 +27,20 @@ async function getLevelRange(dateStart, dateEnd) {
     fetch(`https://api.tzkt.io/v1/blocks?timestamp.ge=${dateStart}&timestamp.le=${dateEnd}&limit=1&sort.desc=level&select=level,timestamp`)
   ]);
   const [first, last] = await Promise.all([firstRes.json(), lastRes.json()]);
-  if (!first.length || !last.length) throw new Error("No blocks found for this date.");
+  
+  // For future dates, estimate levels from the current head block
+  if (!first.length || !last.length) {
+    const headRes = await fetch("https://api.tzkt.io/v1/blocks?limit=1&sort.desc=level&select=level,timestamp");
+    const [head] = await headRes.json();
+    if (!head) throw new Error("Cannot fetch current block.");
+    const headTime = new Date(head.timestamp).getTime();
+    const startTime = new Date(dateStart).getTime();
+    const endTime = new Date(dateEnd).getTime();
+    const startLevel = head.level + Math.round((startTime - headTime) / (BLOCK_TIME_S * 1000));
+    const endLevel = head.level + Math.round((endTime - headTime) / (BLOCK_TIME_S * 1000));
+    return { startLevel, endLevel, startTs: dateStart, endTs: dateEnd };
+  }
+  
   return { startLevel: first[0].level, endLevel: last[0].level, startTs: first[0].timestamp, endTs: last[0].timestamp };
 }
 
@@ -42,9 +55,9 @@ async function getTimestamp(level, fallbackTs, fallbackLevel) {
   }
 }
 
-function formatUTC(d) {
+function formatLocal(d) {
   if (!d) return "--:--";
-  return d.toISOString().slice(11, 16) + " UTC";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
 }
 
 function RankBadge({ rank }) {
@@ -59,9 +72,9 @@ function RankBadge({ rank }) {
 
 export default function App() {
   const todayStr = new Date().toISOString().slice(0, 10);
-  const [baker, setBaker] = useState("tz1aRoaRhSpRYvFdyvgWLL6TGyRoGF51wDjM");
+  const [baker, setBaker] = useState("tz1NZXxWG8bBL1YGzeLRfh2uia3JGkD4NcQ2");
   const [date, setDate] = useState(todayStr);
-  const [windowHours, setWindowHours] = useState(2);
+  const [windowMinutes, setWindowMinutes] = useState(3);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [results, setResults] = useState(null);
@@ -75,10 +88,16 @@ export default function App() {
     try {
       if (!baker.trim()) throw new Error("Enter a baker address.");
       if (!date) throw new Error("Select a date.");
-      if (windowHours < 1) throw new Error("Minimum window is 1 hour.");
+      if (windowMinutes < 1) throw new Error("Minimum outage interval is 1 minute.");
 
       setStatus(`Fetching block range for ${date}…`);
-      const { startLevel, endLevel, startTs } = await getLevelRange(date + "T00:00:00Z", date + "T23:59:59Z");
+      const tzOffset = new Date(date + "T00:00:00").getTimezoneOffset();
+      const pad = (n) => String(Math.abs(n)).padStart(2, "0");
+      const sign = tzOffset <= 0 ? "+" : "-";
+      const tzStr = `${sign}${pad(Math.floor(Math.abs(tzOffset) / 60))}:${pad(Math.abs(tzOffset) % 60)}`;
+      const dayStart = `${date}T00:00:00${tzStr}`;
+      const dayEnd = `${date}T23:59:59${tzStr}`;
+      const { startLevel, endLevel, startTs } = await getLevelRange(dayStart, dayEnd);
       const totalLevels = endLevel - startLevel + 1;
 
       setStatus(`Fetching rights across ${totalLevels.toLocaleString()} levels…`);
@@ -98,11 +117,11 @@ export default function App() {
       const levelMap = {};
       for (const r of rights) {
         if (!levelMap[r.level]) levelMap[r.level] = { attestations: 0, blocks: 0 };
-        if (r.type === "attesting") levelMap[r.level].attestations++;
+        if (r.type === "attestation" || r.type === "attesting") levelMap[r.level].attestations += (r.slots || 1);
         else if (r.type === "baking") levelMap[r.level].blocks++;
       }
 
-      const MIN_GAP_LEVELS = Math.round((windowHours * 3600) / BLOCK_TIME_S);
+      const MIN_GAP_LEVELS = Math.round((windowMinutes * 60) / BLOCK_TIME_S);
       const windowScores = [];
       for (let l = startLevel; l <= endLevel - WINDOW_LEVELS; l++) {
         let score = 0, att = 0, blk = 0;
@@ -146,7 +165,7 @@ export default function App() {
       setStatus("");
     }
     setLoading(false);
-  }, [baker, date, windowHours]);
+  }, [baker, date, windowMinutes]);
 
   const labelStyle = { display: "block", fontSize: 12, fontWeight: 600, letterSpacing: "0.04em", color: "#888", marginBottom: 4, textTransform: "uppercase" };
   const inputStyle = { width: "100%", padding: "8px 10px", fontSize: 14, border: "0.5px solid #ccc", borderRadius: 8, outline: "none", background: "transparent", color: "inherit", fontFamily: "inherit" };
@@ -160,19 +179,19 @@ export default function App() {
       </p>
 
       <div style={{ marginBottom: 12 }}>
-        <label style={labelStyle}>Baker address</label>
+        <label style={labelStyle}>Baker address (Mainnet)</label>
         <input style={monoInput} value={baker} onChange={e => setBaker(e.target.value)} placeholder="tz1..." />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
         <div>
           <label style={labelStyle}>Date</label>
-          <input type="date" style={inputStyle} value={date} max={todayStr} onChange={e => setDate(e.target.value)} />
+          <input type="date" style={inputStyle} value={date} max={(() => { const d = new Date(); d.setDate(d.getDate() + 2); return d.toISOString().slice(0, 10); })()} onChange={e => setDate(e.target.value)} />
         </div>
         <div>
-          <label style={labelStyle}>Min gap between results (hours)</label>
-          <input type="number" style={inputStyle} value={windowHours} min={1} max={12} step={1}
-            onChange={e => setWindowHours(Number(e.target.value))} />
+          <label style={labelStyle}>Outage Time Interval (min)</label>
+          <input type="number" style={inputStyle} value={windowMinutes} min={1} max={720} step={1}
+            onChange={e => setWindowMinutes(Number(e.target.value))} />
         </div>
       </div>
 
@@ -203,7 +222,7 @@ export default function App() {
           <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 12 }}>
             <h3 style={{ fontSize: 16, fontWeight: 600 }}>Top 5 quiet windows</h3>
             <span style={{ fontSize: 12, color: "#888", border: "0.5px solid #ddd", borderRadius: 20, padding: "2px 10px" }}>
-              {results.date} · min gap {windowHours}h
+              {results.date} · outage interval {windowMinutes}min
             </span>
           </div>
 
@@ -217,7 +236,8 @@ export default function App() {
               <RankBadge rank={w.rank} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 17, fontWeight: 600, fontVariantNumeric: "tabular-nums", marginBottom: 4 }}>
-                  {formatUTC(w.tStart)} – {formatUTC(w.tEnd)}
+                  {formatLocal(w.tStart)} – {formatLocal(w.tEnd)}
+                  <span style={{ fontSize: 12, color: "#aaa", fontWeight: 400, marginLeft: 10 }}>block {w.level.toLocaleString()}</span>
                 </div>
                 <div style={{ display: "flex", gap: 16, fontSize: 13, color: "#777", flexWrap: "wrap", marginBottom: 6 }}>
                   <span>🟢 {w.attestCount} attestations</span>
