@@ -1,8 +1,7 @@
 import { useState, useCallback } from "react";
 
 const BLOCK_TIME_S = 6;
-const WINDOW_MINUTES = 3;
-const WINDOW_LEVELS = Math.round((WINDOW_MINUTES * 60) / BLOCK_TIME_S); // 18
+const DEFAULT_WINDOW_MINUTES = 3;
 
 async function fetchAllRights(baker, startLevel, endLevel, onProgress, tsStart, tsEnd) {
   const PAGE = 10000;
@@ -85,6 +84,8 @@ export default function App() {
   const [baker, setBaker] = useState("");
   const [date, setDate] = useState(todayStr);
   const [windowMinutes, setWindowMinutes] = useState(3);
+  const [gapMinutes, setGapMinutes] = useState(60);
+  const [topN, setTopN] = useState(5);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [results, setResults] = useState(null);
@@ -154,13 +155,14 @@ export default function App() {
       // Cap analysis at the last level with actual rights data
       const effectiveEndLevel = Math.min(endLevel, maxRightsLevel);
 
-      const MIN_GAP_LEVELS = Math.round((windowMinutes * 60) / BLOCK_TIME_S);
+      const WINDOW_LEVELS = Math.round((windowMinutes * 60) / BLOCK_TIME_S);
+      const MIN_GAP_LEVELS = Math.round((gapMinutes * 60) / BLOCK_TIME_S);
       const windowScores = [];
       for (let l = startLevel; l <= effectiveEndLevel - WINDOW_LEVELS; l++) {
         let score = 0, att = 0, blk = 0;
         for (let i = 0; i < WINDOW_LEVELS; i++) {
           const d = levelMap[l + i];
-          if (d) { score += d.attestations + d.blocks * 3; att += d.attestations; blk += d.blocks; }
+          if (d) { score += d.attestations + d.blocks * 10000; att += d.attestations; blk += d.blocks; }
         }
         windowScores.push({ level: l, score, attestCount: att, blockCount: blk });
       }
@@ -171,7 +173,7 @@ export default function App() {
 
       const top = [];
       for (const w of candidates) {
-        if (top.length >= 5) break;
+        if (top.length >= topN) break;
         if (!top.some(t => Math.abs(t.level - w.level) < MIN_GAP_LEVELS)) top.push(w);
       }
 
@@ -203,7 +205,7 @@ export default function App() {
       setStatus("");
     }
     setLoading(false);
-  }, [baker, date, windowMinutes]);
+  }, [baker, date, windowMinutes, gapMinutes, topN]);
 
   const labelStyle = { display: "block", fontSize: 12, fontWeight: 600, letterSpacing: "0.04em", color: "#6a8da8", marginBottom: 4, textTransform: "uppercase" };
   const inputStyle = { width: "100%", padding: "8px 10px", fontSize: 14, border: "1px solid #1e3a5f", borderRadius: 8, outline: "none", background: "transparent", color: "inherit", fontFamily: "inherit" };
@@ -215,21 +217,40 @@ export default function App() {
       <p style={{ fontSize: 14, color: "#7a9bb5", marginBottom: 20 }}>
         Find the 5 calmest slots in a baker's schedule for a given day — useful for planning maintenance windows, upgrades, or any downtime where missing attestations or block proposals should be minimized.
       </p>
+      <p style={{ fontSize: 13, color: "#5a8a9f", marginBottom: 4 }}>
+        <strong>Outage Window</strong> — the duration (in minutes) of each quiet slot to find.
+      </p>
+      <p style={{ fontSize: 13, color: "#5a8a9f", marginBottom: 4 }}>
+        <strong>Results Gap</strong> — minimum time (in minutes) between results so they are spread throughout the day.
+      </p>
+      <p style={{ fontSize: 13, color: "#5a8a9f", marginBottom: 20 }}>
+        <strong>Top Results</strong> — how many of the best quiet windows to show.
+      </p>
 
       <div style={{ marginBottom: 12 }}>
         <label style={labelStyle}>Baker address (Mainnet)</label>
         <input style={monoInput} value={baker} onChange={e => setBaker(e.target.value)} placeholder="tz1..." />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12, marginBottom: 16 }}>
         <div>
           <label style={labelStyle}>Date</label>
           <input type="date" style={inputStyle} value={date} min={todayStr} max={(() => { const d = new Date(); d.setDate(d.getDate() + 2); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })()} onChange={e => setDate(e.target.value)} />
         </div>
         <div>
-          <label style={labelStyle}>Outage Time Interval (in minutes)</label>
+          <label style={labelStyle}>Outage Window</label>
           <input type="number" style={inputStyle} value={windowMinutes} min={1} max={720} step={1}
             onChange={e => setWindowMinutes(Number(e.target.value))} />
+        </div>
+        <div>
+          <label style={labelStyle}>Results Gap</label>
+          <input type="number" style={inputStyle} value={gapMinutes} min={1} max={720} step={1}
+            onChange={e => setGapMinutes(Number(e.target.value))} />
+        </div>
+        <div>
+          <label style={labelStyle}>Top Results</label>
+          <input type="number" style={inputStyle} value={topN} min={1} max={20} step={1}
+            onChange={e => setTopN(Number(e.target.value))} />
         </div>
       </div>
 
@@ -264,7 +285,7 @@ export default function App() {
       {results?.windows && (
         <div style={{ marginTop: 24 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 12 }}>
-            <h3 style={{ fontSize: 16, fontWeight: 600 }}>Top 5 quiet windows</h3>
+            <h3 style={{ fontSize: 16, fontWeight: 600 }}>Top {topN} quiet windows</h3>
             <span style={{ fontSize: 12, color: "#6a8da8", border: "1px solid #1e3a5f", borderRadius: 20, padding: "2px 10px" }}>
               {results.date} · outage interval {windowMinutes}min
             </span>
@@ -272,7 +293,7 @@ export default function App() {
 
           <div style={{ fontSize: 13, color: "#7a9bb5", background: "#162736", borderRadius: 8, padding: "10px 14px", marginBottom: 16, lineHeight: 1.6 }}>
             Analyzed <strong>{results.totalRights.toLocaleString()}</strong> rights entries across levels {results.startLevel.toLocaleString()}–{results.endLevel.toLocaleString()}.
-            Score = attestations + 3×blocks. Lower = quieter. Each window is {WINDOW_MINUTES} min (~{WINDOW_LEVELS} blocks).
+            Windows with no block proposals are always preferred. Lower score = quieter. Each window is {windowMinutes} min (~{Math.round((windowMinutes * 60) / BLOCK_TIME_S)} blocks).
           </div>
 
           {results.windows.map((w) => (
@@ -281,7 +302,7 @@ export default function App() {
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 17, fontWeight: 600, fontVariantNumeric: "tabular-nums", marginBottom: 4 }}>
                   {formatLocal(w.tStart)} – {formatLocal(w.tEnd)}
-                  <span style={{ fontSize: 12, color: "#4a6a82", fontWeight: 400, marginLeft: 10 }}>block {w.level.toLocaleString()}</span>
+                  <a href={`https://tzkt.io/${w.level}/operations`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "#4fc3f7", fontWeight: 400, marginLeft: 10, textDecoration: "none" }}>Starts at block {w.level.toLocaleString()}</a>
                 </div>
                 <div style={{ display: "flex", gap: 16, fontSize: 13, color: "#7a9bb5", flexWrap: "wrap", marginBottom: 6 }}>
                   <span>🟢 {w.attestCount} attestations</span>
