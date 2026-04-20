@@ -4,12 +4,15 @@ const BLOCK_TIME_S = 6;
 const WINDOW_MINUTES = 3;
 const WINDOW_LEVELS = Math.round((WINDOW_MINUTES * 60) / BLOCK_TIME_S); // 18
 
-async function fetchAllRights(baker, startLevel, endLevel, onProgress) {
+async function fetchAllRights(baker, startLevel, endLevel, onProgress, tsStart, tsEnd) {
   const PAGE = 10000;
   let rights = [];
   let offset = 0;
+  const useTimestamp = tsStart && tsEnd;
   while (true) {
-    const url = `https://api.tzkt.io/v1/rights?baker=${baker}&level.ge=${startLevel}&level.le=${endLevel}&limit=${PAGE}&offset=${offset}`;
+    const url = useTimestamp
+      ? `https://api.tzkt.io/v1/rights?baker=${baker}&timestamp.ge=${tsStart}&timestamp.le=${tsEnd}&limit=${PAGE}&offset=${offset}`
+      : `https://api.tzkt.io/v1/rights?baker=${baker}&level.ge=${startLevel}&level.le=${endLevel}&limit=${PAGE}&offset=${offset}`;
     const resp = await fetch(url);
     if (!resp.ok) throw new Error(`TzKT API error ${resp.status}: ${resp.statusText}`);
     const page = await resp.json();
@@ -38,10 +41,17 @@ async function getLevelRange(dateStart, dateEnd) {
     const endTime = new Date(dateEnd).getTime();
     const startLevel = head.level + Math.round((startTime - headTime) / (BLOCK_TIME_S * 1000));
     const endLevel = head.level + Math.round((endTime - headTime) / (BLOCK_TIME_S * 1000));
-    return { startLevel, endLevel, startTs: dateStart, endTs: dateEnd };
+    return { startLevel, endLevel, startTs: dateStart, endTs: dateEnd, isFuture: true };
   }
   
-  return { startLevel: first[0].level, endLevel: last[0].level, startTs: first[0].timestamp, endTs: last[0].timestamp };
+  // If the day hasn't ended yet, estimate endLevel for the remaining hours
+  const endTime = new Date(dateEnd).getTime();
+  const lastBlockTime = new Date(last[0].timestamp).getTime();
+  let endLevel = last[0].level;
+  if (endTime > lastBlockTime) {
+    endLevel = last[0].level + Math.round((endTime - lastBlockTime) / (BLOCK_TIME_S * 1000));
+  }
+  return { startLevel: first[0].level, endLevel, startTs: first[0].timestamp, endTs: last[0].timestamp, isFuture: false };
 }
 
 async function getTimestamp(level, fallbackTs, fallbackLevel) {
@@ -71,8 +81,8 @@ function RankBadge({ rank }) {
 }
 
 export default function App() {
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const [baker, setBaker] = useState("tz1NZXxWG8bBL1YGzeLRfh2uia3JGkD4NcQ2");
+  const todayStr = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
+  const [baker, setBaker] = useState("");
   const [date, setDate] = useState(todayStr);
   const [windowMinutes, setWindowMinutes] = useState(3);
   const [status, setStatus] = useState("");
@@ -90,14 +100,32 @@ export default function App() {
       if (!date) throw new Error("Select a date.");
       if (windowMinutes < 1) throw new Error("Minimum outage interval is 1 minute.");
 
-      setStatus(`Fetching block range for ${date}…`);
-      const tzOffset = new Date(date + "T00:00:00").getTimezoneOffset();
-      const pad = (n) => String(Math.abs(n)).padStart(2, "0");
-      const sign = tzOffset <= 0 ? "+" : "-";
-      const tzStr = `${sign}${pad(Math.floor(Math.abs(tzOffset) / 60))}:${pad(Math.abs(tzOffset) % 60)}`;
-      const dayStart = `${date}T00:00:00${tzStr}`;
-      const dayEnd = `${date}T23:59:59${tzStr}`;
-      const { startLevel, endLevel, startTs } = await getLevelRange(dayStart, dayEnd);
+      // Step 1: Get current head block and its timestamp
+      setStatus(`Fetching current block…`);
+      const headRes = await fetch("https://api.tzkt.io/v1/blocks?limit=1&sort.desc=level&select=level,timestamp");
+      const headData = await headRes.json();
+      const head = Array.isArray(headData) ? headData[0] : headData;
+      const headLevel = typeof head === "object" ? head.level : head;
+      const headTimeUTC = typeof head === "object" && head.timestamp ? new Date(head.timestamp).getTime() : Date.now();
+
+      // Step 2: Define the selected day boundaries in LOCAL time
+      const dayStartLocal = new Date(date + "T00:00:00"); // midnight local start
+      const dayEndLocal = new Date(date + "T23:59:59");   // 11:59:59 PM local end
+      const nowLocal = new Date();
+      const isToday = date === todayStr;
+
+      // Step 3: Determine the actual time range to analyze
+      // For today: from NOW to end of day local
+      // For future days: from midnight to 11:59 PM local
+      const rangeStartTime = isToday ? nowLocal.getTime() : dayStartLocal.getTime();
+      const rangeEndTime = dayEndLocal.getTime();
+
+      if (rangeStartTime >= rangeEndTime) throw new Error("No time remaining in the selected day.");
+
+      // Step 4: Estimate block levels for the time range
+      const startLevel = headLevel + Math.round((rangeStartTime - headTimeUTC) / (BLOCK_TIME_S * 1000));
+      const endLevel = headLevel + Math.round((rangeEndTime - headTimeUTC) / (BLOCK_TIME_S * 1000));
+      const startTs = new Date(rangeStartTime).toISOString();
       const totalLevels = endLevel - startLevel + 1;
 
       setStatus(`Fetching rights across ${totalLevels.toLocaleString()} levels…`);
@@ -115,15 +143,20 @@ export default function App() {
       }
 
       const levelMap = {};
+      let maxRightsLevel = startLevel;
       for (const r of rights) {
         if (!levelMap[r.level]) levelMap[r.level] = { attestations: 0, blocks: 0 };
         if (r.type === "attestation" || r.type === "attesting") levelMap[r.level].attestations += (r.slots || 1);
         else if (r.type === "baking") levelMap[r.level].blocks++;
+        if (r.level > maxRightsLevel) maxRightsLevel = r.level;
       }
+
+      // Cap analysis at the last level with actual rights data
+      const effectiveEndLevel = Math.min(endLevel, maxRightsLevel);
 
       const MIN_GAP_LEVELS = Math.round((windowMinutes * 60) / BLOCK_TIME_S);
       const windowScores = [];
-      for (let l = startLevel; l <= endLevel - WINDOW_LEVELS; l++) {
+      for (let l = startLevel; l <= effectiveEndLevel - WINDOW_LEVELS; l++) {
         let score = 0, att = 0, blk = 0;
         for (let i = 0; i < WINDOW_LEVELS; i++) {
           const d = levelMap[l + i];
@@ -134,20 +167,23 @@ export default function App() {
 
       windowScores.sort((a, b) => a.score - b.score || a.level - b.level);
 
+      let candidates = windowScores;
+
       const top = [];
-      for (const w of windowScores) {
+      for (const w of candidates) {
         if (top.length >= 5) break;
         if (!top.some(t => Math.abs(t.level - w.level) < MIN_GAP_LEVELS)) top.push(w);
       }
 
       const maxScore = Math.max(...windowScores.map(w => w.score)) || 1;
 
-      setStatus("Fetching timestamps…");
+      setStatus("Calculating timestamps…");
       const levels = [...new Set(top.flatMap(w => [w.level, w.level + WINDOW_LEVELS]))];
       const tsMap = {};
-      await Promise.all(levels.map(async (lvl) => {
-        tsMap[lvl] = await getTimestamp(lvl, startTs, startLevel);
-      }));
+      for (const lvl of levels) {
+        // Estimate time from head block: headTimeUTC + (lvl - headLevel) * blockTime
+        tsMap[lvl] = new Date(headTimeUTC + (lvl - headLevel) * BLOCK_TIME_S * 1000);
+      }
 
       const enriched = top.map((w, i) => ({
         ...w,
@@ -158,7 +194,9 @@ export default function App() {
       }));
 
       const dayTotal = Object.values(levelMap).reduce((s, v) => s + v.attestations + v.blocks, 0);
-      setResults({ windows: enriched, dayTotal, totalRights: rights.length, baker, date, startLevel, endLevel });
+      const hoursLeft = ((rangeEndTime - rangeStartTime) / 3600000).toFixed(1);
+      const debug = `head: ${headLevel}, start: ${startLevel}, effEnd: ${effectiveEndLevel}, end: ${endLevel}, hoursInRange: ${hoursLeft}, rights: ${rights.length}, scores: ${windowScores.length}, top5: ${top.length}, isToday: ${isToday}`;
+      setResults({ windows: enriched, dayTotal, totalRights: rights.length, baker, date, startLevel, endLevel, debug });
       setStatus("");
     } catch (e) {
       setError(e.message);
@@ -167,15 +205,15 @@ export default function App() {
     setLoading(false);
   }, [baker, date, windowMinutes]);
 
-  const labelStyle = { display: "block", fontSize: 12, fontWeight: 600, letterSpacing: "0.04em", color: "#888", marginBottom: 4, textTransform: "uppercase" };
-  const inputStyle = { width: "100%", padding: "8px 10px", fontSize: 14, border: "0.5px solid #ccc", borderRadius: 8, outline: "none", background: "transparent", color: "inherit", fontFamily: "inherit" };
+  const labelStyle = { display: "block", fontSize: 12, fontWeight: 600, letterSpacing: "0.04em", color: "#6a8da8", marginBottom: 4, textTransform: "uppercase" };
+  const inputStyle = { width: "100%", padding: "8px 10px", fontSize: 14, border: "1px solid #1e3a5f", borderRadius: 8, outline: "none", background: "transparent", color: "inherit", fontFamily: "inherit" };
   const monoInput = { ...inputStyle, fontFamily: "monospace", fontSize: 13 };
 
   return (
     <div style={{ maxWidth: 660, padding: "1.5rem 0", fontFamily: "system-ui, sans-serif" }}>
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 4 }}>Baker quiet window finder</h2>
-      <p style={{ fontSize: 14, color: "#777", marginBottom: 20 }}>
-        Find the 5 calmest 3-minute slots in a baker's schedule for a given day
+      <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>Baker Quiet Window Finder by Dulo Stakery</h2>
+      <p style={{ fontSize: 14, color: "#7a9bb5", marginBottom: 20 }}>
+        Find the 5 calmest slots in a baker's schedule for a given day — useful for planning maintenance windows, upgrades, or any downtime where missing attestations or block proposals should be minimized.
       </p>
 
       <div style={{ marginBottom: 12 }}>
@@ -186,10 +224,10 @@ export default function App() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
         <div>
           <label style={labelStyle}>Date</label>
-          <input type="date" style={inputStyle} value={date} max={(() => { const d = new Date(); d.setDate(d.getDate() + 2); return d.toISOString().slice(0, 10); })()} onChange={e => setDate(e.target.value)} />
+          <input type="date" style={inputStyle} value={date} min={todayStr} max={(() => { const d = new Date(); d.setDate(d.getDate() + 2); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })()} onChange={e => setDate(e.target.value)} />
         </div>
         <div>
-          <label style={labelStyle}>Outage Time Interval (min)</label>
+          <label style={labelStyle}>Outage Time Interval (in minutes)</label>
           <input type="number" style={inputStyle} value={windowMinutes} min={1} max={720} step={1}
             onChange={e => setWindowMinutes(Number(e.target.value))} />
         </div>
@@ -198,13 +236,13 @@ export default function App() {
       <button
         onClick={run}
         disabled={loading}
-        style={{ width: "100%", padding: "10px 0", fontSize: 15, fontWeight: 600, borderRadius: 8, border: "0.5px solid #ccc", cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.5 : 1, background: "transparent", color: "inherit" }}
+        style={{ width: "100%", padding: "10px 0", fontSize: 15, fontWeight: 600, borderRadius: 8, border: "1px solid #1e3a5f", cursor: loading ? "not-allowed" : "pointer", opacity: loading ? 0.5 : 1, background: "transparent", color: "inherit" }}
       >
         {loading ? "Analyzing…" : "Analyze schedule ↗"}
       </button>
 
       {status && (
-        <p style={{ fontSize: 13, color: "#888", marginTop: 12, display: "flex", alignItems: "center", gap: 8 }}>
+        <p style={{ fontSize: 13, color: "#6a8da8", marginTop: 12, display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ display: "inline-block", width: 12, height: 12, border: "2px solid #ccc", borderTopColor: "#888", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
           {status}
         </p>
@@ -212,8 +250,14 @@ export default function App() {
       {error && <p style={{ fontSize: 13, color: "#c0392b", marginTop: 12 }}>⚠ {error}</p>}
 
       {results?.empty && (
-        <div style={{ marginTop: 20, padding: "12px 16px", background: "#f5f5f5", borderRadius: 10, fontSize: 14, color: "#555" }}>
-          No rights found for <code>{results.baker.slice(0, 16)}…</code> on {results.date}. Try a different baker or date.
+        <div style={{ marginTop: 20, padding: "12px 16px", background: "#162736", borderRadius: 10, fontSize: 14, color: "#8aa4b8" }}>
+          {results.pastMessage || <>No rights found for <code>{results.baker.slice(0, 16)}…</code> on {results.date}. Try a different baker or date.</>}
+        </div>
+      )}
+
+      {results?.debug && (
+        <div style={{ marginTop: 12, padding: "8px 12px", background: "#1a1a2e", borderRadius: 8, fontSize: 12, color: "#ff9800", fontFamily: "monospace" }}>
+          DEBUG: {results.debug}
         </div>
       )}
 
@@ -221,44 +265,48 @@ export default function App() {
         <div style={{ marginTop: 24 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 12 }}>
             <h3 style={{ fontSize: 16, fontWeight: 600 }}>Top 5 quiet windows</h3>
-            <span style={{ fontSize: 12, color: "#888", border: "0.5px solid #ddd", borderRadius: 20, padding: "2px 10px" }}>
+            <span style={{ fontSize: 12, color: "#6a8da8", border: "1px solid #1e3a5f", borderRadius: 20, padding: "2px 10px" }}>
               {results.date} · outage interval {windowMinutes}min
             </span>
           </div>
 
-          <div style={{ fontSize: 13, color: "#777", background: "#f8f8f8", borderRadius: 8, padding: "10px 14px", marginBottom: 16, lineHeight: 1.6 }}>
+          <div style={{ fontSize: 13, color: "#7a9bb5", background: "#162736", borderRadius: 8, padding: "10px 14px", marginBottom: 16, lineHeight: 1.6 }}>
             Analyzed <strong>{results.totalRights.toLocaleString()}</strong> rights entries across levels {results.startLevel.toLocaleString()}–{results.endLevel.toLocaleString()}.
             Score = attestations + 3×blocks. Lower = quieter. Each window is {WINDOW_MINUTES} min (~{WINDOW_LEVELS} blocks).
           </div>
 
           {results.windows.map((w) => (
-            <div key={w.level} style={{ display: "flex", alignItems: "center", gap: 16, padding: "14px 16px", border: "0.5px solid #e0e0e0", borderRadius: 12, marginBottom: 10, background: "#fff" }}>
+            <div key={w.level} style={{ display: "flex", alignItems: "center", gap: 16, padding: "14px 16px", border: "1px solid #1e3a5f", borderRadius: 12, marginBottom: 10, background: "#162736" }}>
               <RankBadge rank={w.rank} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 17, fontWeight: 600, fontVariantNumeric: "tabular-nums", marginBottom: 4 }}>
                   {formatLocal(w.tStart)} – {formatLocal(w.tEnd)}
-                  <span style={{ fontSize: 12, color: "#aaa", fontWeight: 400, marginLeft: 10 }}>block {w.level.toLocaleString()}</span>
+                  <span style={{ fontSize: 12, color: "#4a6a82", fontWeight: 400, marginLeft: 10 }}>block {w.level.toLocaleString()}</span>
                 </div>
-                <div style={{ display: "flex", gap: 16, fontSize: 13, color: "#777", flexWrap: "wrap", marginBottom: 6 }}>
+                <div style={{ display: "flex", gap: 16, fontSize: 13, color: "#7a9bb5", flexWrap: "wrap", marginBottom: 6 }}>
                   <span>🟢 {w.attestCount} attestations</span>
                   <span>🟡 {w.blockCount} block proposals</span>
-                  <span style={{ color: "#aaa" }}>score: {w.score}</span>
+                  <span style={{ color: "#4a6a82" }}>score: {w.score}</span>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div style={{ flex: 1, height: 5, background: "#eee", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ flex: 1, height: 5, background: "#1e3a5f", borderRadius: 3, overflow: "hidden" }}>
                     <div style={{ width: `${w.quietness}%`, height: "100%", background: "#1D9E75", borderRadius: 3 }} />
                   </div>
-                  <span style={{ fontSize: 12, color: "#888", minWidth: 70 }}>{w.quietness}% quiet</span>
+                  <span style={{ fontSize: 12, color: "#6a8da8", minWidth: 70 }}>{w.quietness}% quiet</span>
                 </div>
               </div>
             </div>
           ))}
 
-          <p style={{ fontSize: 12, color: "#aaa", marginTop: 8 }}>
+          <p style={{ fontSize: 12, color: "#4a6a82", marginTop: 8 }}>
             Total rights that day: {results.dayTotal.toLocaleString()} · Levels {results.startLevel.toLocaleString()}–{results.endLevel.toLocaleString()}
           </p>
         </div>
       )}
+
+      <p style={{ textAlign: "center", fontSize: 13, color: "#4a6a82", marginTop: 40, paddingTop: 16, borderTop: "1px solid #1e3a5f" }}>
+        Powered by <a href="https://tzkt.io/tz1NZXxWG8bBL1YGzeLRfh2uia3JGkD4NcQ2" target="_blank" rel="noopener noreferrer" style={{ color: "#1D9E75", textDecoration: "none" }}>Dulo Stakery</a>
+      </p>
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
