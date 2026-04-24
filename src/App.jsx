@@ -196,9 +196,7 @@ export default function App() {
       }));
 
       const dayTotal = Object.values(levelMap).reduce((s, v) => s + v.attestations + v.blocks, 0);
-      const hoursLeft = ((rangeEndTime - rangeStartTime) / 3600000).toFixed(1);
-      const debug = `head: ${headLevel}, start: ${startLevel}, effEnd: ${effectiveEndLevel}, end: ${endLevel}, hoursInRange: ${hoursLeft}, rights: ${rights.length}, scores: ${windowScores.length}, top5: ${top.length}, isToday: ${isToday}`;
-      setResults({ windows: enriched, dayTotal, totalRights: rights.length, baker, date, startLevel, endLevel, debug });
+      setResults({ windows: enriched, dayTotal, totalRights: rights.length, baker, date, startLevel, endLevel });
       setStatus("");
     } catch (e) {
       setError(e.message);
@@ -273,12 +271,6 @@ export default function App() {
       {results?.empty && (
         <div style={{ marginTop: 20, padding: "12px 16px", background: "#162736", borderRadius: 10, fontSize: 14, color: "#8aa4b8" }}>
           {results.pastMessage || <>No rights found for <code>{results.baker.slice(0, 16)}…</code> on {results.date}. Try a different baker or date.</>}
-        </div>
-      )}
-
-      {results?.debug && (
-        <div style={{ marginTop: 12, padding: "8px 12px", background: "#1a1a2e", borderRadius: 8, fontSize: 12, color: "#ff9800", fontFamily: "monospace" }}>
-          DEBUG: {results.debug}
         </div>
       )}
 
