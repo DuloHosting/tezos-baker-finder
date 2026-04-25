@@ -211,7 +211,7 @@ export default function App() {
 
   return (
     <div style={{ maxWidth: 660, padding: "1.5rem 0", fontFamily: "system-ui, sans-serif" }}>
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>Baker Quiet Window Finder by Dulo Stakery</h2>
+      <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>Baker Quiet Window Finder</h2>
       <p style={{ fontSize: 14, color: "#7a9bb5", marginBottom: 20 }}>
         Find the 5 calmest slots in a baker's schedule for a given day — useful for planning maintenance windows, upgrades, or any downtime where missing attestations or block proposals should be minimized.
       </p>
