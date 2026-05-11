@@ -283,6 +283,10 @@ export default function App() {
             </span>
           </div>
 
+          <div style={{ fontSize: 12, color: "#6a8da8", marginBottom: 12 }}>
+            Powered by <a href="https://tzkt.io" target="_blank" rel="noopener noreferrer" style={{ color: "#4a9eff", textDecoration: "none" }}>TzKT API</a>
+          </div>
+
           <div style={{ fontSize: 13, color: "#7a9bb5", background: "#162736", borderRadius: 8, padding: "10px 14px", marginBottom: 16, lineHeight: 1.6 }}>
             Analyzed <strong>{results.totalRights.toLocaleString()}</strong> rights entries across levels {results.startLevel.toLocaleString()}–{results.endLevel.toLocaleString()}.
             Windows with no block proposals are always preferred. Lower score = quieter. Each window is {windowMinutes} min (~{Math.round((windowMinutes * 60) / BLOCK_TIME_S)} blocks).
