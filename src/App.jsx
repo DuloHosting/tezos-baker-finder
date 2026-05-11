@@ -284,7 +284,7 @@ export default function App() {
           </div>
 
           <div style={{ fontSize: 12, color: "#6a8da8", marginBottom: 12 }}>
-            Powered by <a href="https://tzkt.io" target="_blank" rel="noopener noreferrer" style={{ color: "#4a9eff", textDecoration: "none" }}>TzKT API</a>
+            Credit to <a href="https://tzkt.io" target="_blank" rel="noopener noreferrer" style={{ color: "#4a9eff", textDecoration: "none" }}>TzKT APIs</a> for enabling this tool
           </div>
 
           <div style={{ fontSize: 13, color: "#7a9bb5", background: "#162736", borderRadius: 8, padding: "10px 14px", marginBottom: 16, lineHeight: 1.6 }}>
