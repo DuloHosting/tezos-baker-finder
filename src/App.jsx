@@ -221,8 +221,11 @@ export default function App() {
       <p style={{ fontSize: 13, color: "#5a8a9f", marginBottom: 4 }}>
         <strong>Results Gap</strong> — minimum time (in minutes) between results so they are spread throughout the day.
       </p>
-      <p style={{ fontSize: 13, color: "#5a8a9f", marginBottom: 20 }}>
+      <p style={{ fontSize: 13, color: "#5a8a9f", marginBottom: 4 }}>
         <strong>Top Results</strong> — how many of the best quiet windows to show.
+      </p>
+      <p style={{ fontSize: 12, color: "#6a8da8", marginTop: 12, marginBottom: 20 }}>
+        Credit to <a href="https://tzkt.io" target="_blank" rel="noopener noreferrer" style={{ color: "#4a9eff", textDecoration: "none" }}>TzKT APIs</a> for enabling this tool
       </p>
 
       <div style={{ marginBottom: 12 }}>
